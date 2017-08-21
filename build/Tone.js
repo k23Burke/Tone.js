@@ -21644,17 +21644,21 @@
 		 */
 	    Tone.MultiPlayer = function () {
 	        var options = this.optionsObject(arguments, [
-	            'urls',
+	            'playerObjects',
 	            'onload'
 	        ], Tone.MultiPlayer.defaults);
-	        if (options.urls instanceof Tone.Buffers) {
+	        var urls = {};
+	        for (var key in options.playerObjects) {
+	            urls[key] = options.playerObjects[key].url;
+	        }
+	        if (urls instanceof Tone.Buffers) {
 	            /**
 				 *  All the buffers belonging to the player.
 				 *  @type  {Tone.Buffers}
 				 */
-	            this.buffers = options.urls;
+	            this.buffers = urls;
 	        } else {
-	            this.buffers = new Tone.Buffers(options.urls, options.onload);
+	            this.buffers = new Tone.Buffers(urls, options.onload);
 	        }
 	        /**
 			 *  Keeps track of the currently playing sources.
@@ -21662,6 +21666,35 @@
 			 *  @private
 			 */
 	        this._activeSources = {};
+	        /**
+			 *  Manages choking array with a maximum of 16 choke channels.
+			 *  Channels are indexed and instantiated at 0
+			 *  @type  {Array}
+			 */
+	        this.chokeGroups = new Array(16);
+	        this.chokeGroups = this.chokeGroups.map(function (val) {
+	            console.log('value', val);
+	            return [];
+	        });
+	        console.log('this.chokeGroups', this.chokeGroups);
+	        /**
+			 *  Manages choking array with a maximum of 16 choke channels.
+			 *  Channels are indexed and instantiated at 0
+			 *  @type  {Array}
+			 *  @private
+			 */
+	        this.chokeLookup = {};
+	        // fill in choke info...
+	        for (var key in options.playerObjects) {
+	            var chokeNum = options.playerObjects[key].choke;
+	            // if (chokeNum !== undefined) {
+	            // 	console.log('chokeNum', chokeNum)
+	            // 	console.log('this.chokeGroups', this.chokeGroups)
+	            // 	console.log('this.chokeGroups[chokeNum]', this.chokeGroups[chokeNum])
+	            // 	this.chokeGroups[chokeNum].push(key);
+	            // }
+	            this.chokeLookup[key] = chokeNum;
+	        }
 	        /**
 			 *  The fade in envelope which is applied
 			 *  to the beginning of the BufferSource
@@ -21711,7 +21744,7 @@
 		 * @return {Tone.BufferSource}
 		 * @private
 		 */
-	    Tone.MultiPlayer.prototype._makeSource = function (bufferName) {
+	    Tone.MultiPlayer.prototype._makeSource = function (bufferName, chokeGroupIndex) {
 	        var buffer;
 	        if (this.isString(bufferName) || this.isNumber(bufferName)) {
 	            buffer = this.buffers.get(bufferName).get();
@@ -21725,6 +21758,7 @@
 	            this._activeSources[bufferName] = [];
 	        }
 	        this._activeSources[bufferName].push(source);
+	        // this.chokeGroups[chokeGroupIndex].push(bufferName)
 	        return source;
 	    };
 	    /**
@@ -21743,6 +21777,15 @@
 	        time = this.toSeconds(time);
 	        var source = this._makeSource(bufferName);
 	        source.start(time, offset, duration, this.defaultArg(gain, 1), this.fadeIn);
+	        //make sure to stop others at choke group at time
+	        var chokeNum = this.chokeLookup[bufferName];
+	        if (Number.isInteger(chokeNum)) {
+	            this.chokeGroups[chokeNum].map(function (buffName) {
+	                if (this._activeSources[buffName] && this._activeSources[buffName].length) {
+	                    this._activeSources[buffName].shift().stop(time, this.fadeOut);
+	                }
+	            });
+	        }
 	        if (duration) {
 	            source.stop(time + this.toSeconds(duration), this.fadeOut);
 	        }
@@ -21769,6 +21812,15 @@
 	        source.loopStart = this.toSeconds(this.defaultArg(loopStart, 0));
 	        source.loopEnd = this.toSeconds(this.defaultArg(loopEnd, 0));
 	        source.start(time, offset, undefined, this.defaultArg(gain, 1), this.fadeIn);
+	        //make sure to stop others at choke group at time
+	        var chokeNum = this.chokeLookup[bufferName];
+	        if (Number.isInteger(chokeNum)) {
+	            this.chokeGroups[chokeNum].map(function (buffName) {
+	                if (this._activeSources[buffName] && this._activeSources[buffName].length) {
+	                    this._activeSources[buffName].shift().stop(time, this.fadeOut);
+	                }
+	            });
+	        }
 	        pitch = this.defaultArg(pitch, 0);
 	        source.playbackRate.value = this.intervalToFrequencyRatio(pitch);
 	        return this;
@@ -21800,6 +21852,7 @@
 	            for (var i = 0; i < sources.length; i++) {
 	                sources[i].stop(time);
 	            }
+	            this._activeSources[bufferName] = [];
 	        }
 	        return this;
 	    };
@@ -21809,10 +21862,16 @@
 		 *                       to in start/stop methods. 
 		 *  @param {String|Tone.Buffer} url The url of the buffer to load
 		 *                                  or the buffer.
+		 *  @param {Integer} chokeIndex The index of the buffer to apply
+		 *                                  choking to other buffers in the group.
 		 *  @param {Function} callback The function to invoke after the buffer is loaded.
 		 */
-	    Tone.MultiPlayer.prototype.add = function (name, url, callback) {
+	    Tone.MultiPlayer.prototype.add = function (name, url, chokeIndex, callback) {
 	        this.buffers.add(name, url, callback);
+	        if (Number.isInteger(chokeIndex)) {
+	            this.chokeGroups[chokeIndex].push(name);
+	        }
+	        this.chokeLookup[name] = chokeIndex;
 	        return this;
 	    };
 	    /**
@@ -21825,7 +21884,12 @@
 		 */
 	    Object.defineProperty(Tone.MultiPlayer.prototype, 'state', {
 	        get: function () {
-	            return this._activeSources.length > 0 ? Tone.State.Started : Tone.State.Stopped;
+	            for (var key in this._activeSources) {
+	                if (this._activeSources[key].length) {
+	                    return Tone.State.Started;
+	                }
+	            }
+	            return Tone.State.Stopped;
 	        }
 	    });
 	    /**
